@@ -1,0 +1,201 @@
+"""
+MiniMax API 客户端。
+所有大模型调用统一通过本模块，不在业务代码中直接调用外部 API。
+"""
+import json
+import logging
+
+import httpx
+
+from app.core.config import settings
+
+logger = logging.getLogger(__name__)
+
+_BASE_URL = "https://api.minimax.chat/v1/text/chatcompletion_v2"
+
+
+def _headers() -> dict:
+    return {
+        "Authorization": f"Bearer {settings.minimax_api_key}",
+        "Content-Type": "application/json",
+    }
+
+
+def _chat(system_prompt: str, user_content: str, *, temperature: float = 0.7) -> str:
+    """底层同步请求，返回模型回复文本；失败时抛出 RuntimeError"""
+    payload = {
+        "model": settings.minimax_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ],
+        "temperature": temperature,
+    }
+    try:
+        resp = httpx.post(_BASE_URL, headers=_headers(), json=payload, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        return data["choices"][0]["message"]["content"]
+    except httpx.HTTPStatusError as e:
+        logger.error("MiniMax HTTP 错误: %s", e)
+        raise RuntimeError(f"大模型服务异常: {e.response.status_code}") from e
+    except Exception as e:
+        logger.error("MiniMax 调用失败: %s", e)
+        raise RuntimeError(f"大模型服务不可用: {e}") from e
+
+
+def _parse_json(text: str) -> dict | list:
+    """从模型回复中提取 JSON，兼容 markdown 代码块包裹"""
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        text = "\n".join(lines[1:-1])
+    return json.loads(text)
+
+
+# ── 公开方法 ──────────────────────────────────────────────────
+
+def answer_question(question: str, course: str | None, history: list[dict]) -> dict:
+    """
+    学生智能问答。
+    返回: {"answer": str, "suggestions": list[str]}
+    """
+    history_text = ""
+    if history:
+        history_text = "\n".join(
+            f"{'学生' if m['role'] == 'user' else 'AI'}: {m['content']}"
+            for m in history[-6:]  # 最近 3 轮
+        )
+    course_hint = f"当前课程：{course}。" if course else ""
+    system = (
+        f"你是一个专业的学习助手。{course_hint}"
+        "请用简洁、准确的语言回答学生的问题，并在最后给出 2-3 条学习建议。"
+        '以 JSON 格式返回，格式为：{"answer": "...", "suggestions": ["...", "..."]}'
+    )
+    user = f"{history_text}\n学生问题：{question}" if history_text else question
+    raw = _chat(system, user)
+    try:
+        return _parse_json(raw)
+    except Exception:
+        return {"answer": raw, "suggestions": []}
+
+
+def generate_summary(title: str, source_text: str, summary_type: str, course: str | None) -> dict:
+    """
+    知识点总结。
+    返回: {"overview": str, "key_points": [], "difficult_points": [], "review_tips": []}
+    """
+    course_hint = f"课程：{course}，" if course else ""
+    type_map = {"structured": "结构化总结", "brief": "简要摘要", "review": "复习清单"}
+    type_desc = type_map.get(summary_type, "结构化总结")
+    system = (
+        f"你是一个专业的学习内容整理助手。{course_hint}请对以下内容生成{type_desc}。"
+        "以 JSON 格式返回，包含字段：overview（概述）、key_points（要点列表）、"
+        "difficult_points（难点列表）、review_tips（复习建议列表）。"
+    )
+    raw = _chat(system, f"标题：{title}\n\n内容：{source_text}")
+    try:
+        return _parse_json(raw)
+    except Exception:
+        return {"overview": raw, "key_points": [], "difficult_points": [], "review_tips": []}
+
+
+def generate_learning_plan(course: str, goal: str, basis: dict, available_minutes: int) -> dict:
+    """
+    生成个性化学习计划。
+    返回: {"analysis": {...}, "plan": [{"day": 1, "task": "...", "duration_minutes": 60}, ...]}
+    """
+    system = (
+        "你是一个专业的学习规划助手。根据学生的成绩、作业完成情况和学习目标，"
+        "生成一份按天安排的学习计划。"
+        "以 JSON 格式返回，包含字段：analysis（包含 current_level、weak_points、priority）"
+        "和 plan（每天任务列表，每项含 day、task、duration_minutes）。"
+    )
+    user = (
+        f"课程：{course}\n学习目标：{goal}\n每天可用时间：{available_minutes} 分钟\n"
+        f"学情数据：{json.dumps(basis, ensure_ascii=False)}"
+    )
+    raw = _chat(system, user)
+    try:
+        return _parse_json(raw)
+    except Exception:
+        return {"analysis": {}, "plan": []}
+
+
+def grade_submission(content: str, reference_answer: str, rubric: str) -> dict:
+    """
+    AI 批改单份作业。
+    返回: {"ai_score": float, "comments": str, "deductions": [], "suggestions": []}
+    """
+    system = (
+        "你是一个严谨的作业批改助手。根据参考答案和评分标准对学生作业进行评分。"
+        "以 JSON 格式返回，包含字段：ai_score（0-100 的数字分数）、comments（总体评语）、"
+        "deductions（扣分点列表，每项含 point 和 minus 字段）、suggestions（修改建议列表）。"
+    )
+    user = (
+        f"【评分标准】\n{rubric}\n\n"
+        f"【参考答案】\n{reference_answer}\n\n"
+        f"【学生作业】\n{content}"
+    )
+    raw = _chat(system, user, temperature=0.3)
+    try:
+        result = _parse_json(raw)
+        # 确保 ai_score 是数字
+        result["ai_score"] = float(result.get("ai_score", 0))
+        return result
+    except Exception:
+        return {"ai_score": 0.0, "comments": raw, "deductions": [], "suggestions": []}
+
+
+def analyze_submissions(
+    submissions: list[dict],
+    suspect_pairs: list[tuple[int, int, float]],
+    compare_dimensions: list[str],
+) -> dict:
+    """
+    AI 查重与作业比对（合并）。
+    submissions: [{"id": str, "student_name": str, "text": str}, ...]
+    suspect_pairs: C++ 粗筛结果 [(i, j, similarity), ...]
+    返回: {"suspicious_pairs": [...], "comparison_details": [...], "common_issues": [...], "teaching_suggestions": [...]}
+    """
+    # 构造待分析的可疑对文本
+    pairs_text = ""
+    for i, j, sim in suspect_pairs:
+        a = submissions[i]
+        b = submissions[j]
+        pairs_text += (
+            f"\n--- 可疑对（指纹相似度 {sim:.2f}）---\n"
+            f"学生A（{a['student_name']}）：{a['text'][:500]}\n"
+            f"学生B（{b['student_name']}）：{b['text'][:500]}\n"
+        )
+
+    all_texts = "\n".join(
+        f"学生{s['student_name']}：{s['text'][:300]}" for s in submissions
+    )
+    dims = "、".join(compare_dimensions)
+
+    system = (
+        "你是一个专业的作业分析助手，负责查重和作业比对。"
+        "以 JSON 格式返回，包含字段：\n"
+        "- suspicious_pairs: 可疑对列表，每项含 submission_a、student_a、submission_b、student_b、"
+        "similarity、risk_level（high/medium/low）、similar_segments（列表）、ai_reason\n"
+        "- comparison_details: 每份作业的比对详情列表，每项含 submission_id、student_name、"
+        "strengths（列表）、weaknesses（列表）、dimension_scores（字典）\n"
+        "- common_issues: 共同问题列表\n"
+        "- teaching_suggestions: 教学建议列表"
+    )
+    user = (
+        f"比对维度：{dims}\n\n"
+        f"所有提交：\n{all_texts}\n\n"
+        f"需重点关注的可疑对：{pairs_text if pairs_text else '无'}"
+    )
+    raw = _chat(system, user, temperature=0.3)
+    try:
+        return _parse_json(raw)
+    except Exception:
+        return {
+            "suspicious_pairs": [],
+            "comparison_details": [],
+            "common_issues": [],
+            "teaching_suggestions": [raw],
+        }

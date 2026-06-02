@@ -1,0 +1,133 @@
+# ─── 控制脚本产物 ──────────────────────────────────────────────
+logs/
+pids/
+
+
+# ─── 操作系统 ─────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+
+
+# ─── 编辑器 / IDE ─────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+
+
+# ══════════════════════════════════════════════════════════════
+# 后端（Python / uv / FastAPI）
+# ══════════════════════════════════════════════════════════════
+
+# 虚拟环境
+backend/.venv/
+
+# uv 锁文件不忽略（应提交以保证可复现构建）
+# backend/uv.lock
+
+# Python 编译产物
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+
+# 环境变量（含密钥，绝不提交）
+backend/.env
+backend/.env.local
+backend/.env.*.local
+
+# 数据库文件
+backend/*.db
+backend/*.sqlite
+backend/*.sqlite3
+
+# 上传的文件
+backend/uploads/
+
+# 运行日志
+backend/logs/
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# mypy / ruff / pyright 缓存
+.mypy_cache/
+.ruff_cache/
+pyrightconfig.json
+
+
+# ══════════════════════════════════════════════════════════════
+# C++ 文件处理模块（pybind11）
+# ══════════════════════════════════════════════════════════════
+
+# 编译产物
+cpp_processor/build/
+cpp_processor/dist/
+cpp_processor/*.egg-info/
+
+# pybind11 编译出的 Python 扩展
+cpp_processor/*.so
+cpp_processor/*.pyd
+cpp_processor/*.dylib
+cpp_processor/*.dll
+
+# 若 .so 放到 backend/app 供导入，也一并忽略
+backend/app/file_processor*.so
+backend/app/file_processor*.pyd
+backend/app/file_processor*.dylib
+
+# CMake 构建目录
+cpp_processor/CMakeFiles/
+cpp_processor/CMakeCache.txt
+cpp_processor/cmake_install.cmake
+cpp_processor/Makefile
+cpp_processor/*.make
+
+# 编译器中间产物
+*.o
+*.obj
+*.a
+*.lib
+*.out
+
+
+# ══════════════════════════════════════════════════════════════
+# 前端（React / TypeScript / Vite / Node.js）
+# ══════════════════════════════════════════════════════════════
+
+# 依赖目录
+frontend/node_modules/
+
+# 构建产物
+frontend/dist/
+frontend/build/
+
+# Vite 缓存
+frontend/.vite/
+
+# 环境变量
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+
+# TypeScript 构建信息
+frontend/*.tsbuildinfo
+
+# 测试覆盖率
+frontend/coverage/
