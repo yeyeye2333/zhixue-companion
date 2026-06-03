@@ -1,6 +1,13 @@
 """
 MiniMax API 客户端。
 所有大模型调用统一通过本模块，不在业务代码中直接调用外部 API。
+
+连接池策略：
+  - 使用模块级 httpx.Client 单例，复用 TCP 连接，避免每次请求都经历
+    TCP 握手 + TLS 协商的开销。
+  - limits：最多保留 10 条空闲连接；最大并发连接数 20。
+  - timeout：连接建立 5 s，读取 60 s（大模型首 token 可能较慢）。
+  - 生命周期：应用启动时由 close() 惰性初始化；关闭时调用 close() 释放。
 """
 import json
 import logging
@@ -12,6 +19,43 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://api.minimax.chat/v1/text/chatcompletion_v2"
+
+# ── 连接池配置 ─────────────────────────────────────────────────
+# keepalive_expiry：空闲连接最长保留时间（秒），超时后被主动关闭
+_LIMITS = httpx.Limits(
+    max_keepalive_connections=10,   # 最多保留的空闲长连接数
+    max_connections=20,             # 最大并发连接数
+    keepalive_expiry=30.0,          # 空闲连接保活时间（秒）
+)
+
+# connect：TCP+TLS 握手超时；read：等待服务端首字节超时
+_TIMEOUT = httpx.Timeout(
+    connect=5.0,    # 连接建立超时（秒）
+    read=60.0,      # 读取超时，留出模型推理时间（秒）
+    write=10.0,     # 请求体写入超时（秒）
+    pool=5.0,       # 从连接池获取连接的等待超时（秒）
+)
+
+# 模块级单例，应用启动后复用，不在每次请求时新建
+_http_client: httpx.Client | None = None
+
+
+def _get_client() -> httpx.Client:
+    """惰性初始化 HTTP 客户端单例（同步场景）"""
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.Client(limits=_LIMITS, timeout=_TIMEOUT)
+        logger.info("MiniMax HTTP 客户端已初始化（连接池: max=%d）", _LIMITS.max_connections)
+    return _http_client
+
+
+def close() -> None:
+    """关闭连接池，释放所有底层 TCP 连接，应在应用关闭时调用"""
+    global _http_client
+    if _http_client is not None and not _http_client.is_closed:
+        _http_client.close()
+        logger.info("MiniMax HTTP 客户端已关闭")
+    _http_client = None
 
 
 def _headers() -> dict:
@@ -32,7 +76,7 @@ def _chat(system_prompt: str, user_content: str, *, temperature: float = 0.7) ->
         "temperature": temperature,
     }
     try:
-        resp = httpx.post(_BASE_URL, headers=_headers(), json=payload, timeout=60)
+        resp = _get_client().post(_BASE_URL, headers=_headers(), json=payload)
         resp.raise_for_status()
         data = resp.json()
         return data["choices"][0]["message"]["content"]

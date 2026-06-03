@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
 from app.db.init_db import init_db
+from app.services import minimax_client
 
 # 模块加载时立即创建必要目录，确保 StaticFiles mount 不报错
 os.makedirs(settings.upload_dir, exist_ok=True)
@@ -18,7 +19,11 @@ os.makedirs(settings.log_dir, exist_ok=True)
 async def lifespan(app: FastAPI):
     # 启动时建表（目录已在上方创建）
     init_db()
+    # 预热 MiniMax HTTP 连接池（惰性初始化）
+    minimax_client._get_client()
     yield
+    # 关闭时释放 HTTP 连接池，优雅退出
+    minimax_client.close()
 
 
 app = FastAPI(title="智学伴侣 API", version="0.1.0", lifespan=lifespan)
